@@ -431,13 +431,19 @@ zfs_userquota_prop_to_obj(zfs_sb_t *zsb, zfs_userquota_prop_t type)
 {
 	switch (type) {
 	case ZFS_PROP_USERUSED:
+	case ZFS_PROP_USEROBJUSED:
 		return (DMU_USERUSED_OBJECT);
 	case ZFS_PROP_GROUPUSED:
+	case ZFS_PROP_GROUPOBJUSED:
 		return (DMU_GROUPUSED_OBJECT);
 	case ZFS_PROP_USERQUOTA:
 		return (zsb->z_userquota_obj);
 	case ZFS_PROP_GROUPQUOTA:
 		return (zsb->z_groupquota_obj);
+	case ZFS_PROP_USEROBJQUOTA:
+		return (zsb->z_userobjquota_obj);
+	case ZFS_PROP_GROUPOBJQUOTA:
+		return (zsb->z_groupobjquota_obj);
 	default:
 		return (SET_ERROR(ENOTSUP));
 	}
@@ -453,8 +459,14 @@ zfs_userspace_many(zfs_sb_t *zsb, zfs_userquota_prop_t type,
 	zap_attribute_t za;
 	zfs_useracct_t *buf = vbuf;
 	uint64_t obj;
+	int offset = 0;
 
 	if (!dmu_objset_userspace_present(zsb->z_os))
+		return (SET_ERROR(ENOTSUP));
+
+	if ((type == ZFS_PROP_USEROBJUSED || type == ZFS_PROP_GROUPOBJUSED ||
+	    type == ZFS_PROP_USEROBJQUOTA || type == ZFS_PROP_GROUPOBJQUOTA) &&
+	    !dmu_objset_userobjspace_present(zsb->z_os))
 		return (SET_ERROR(ENOTSUP));
 
 	obj = zfs_userquota_prop_to_obj(zsb, type);
@@ -463,6 +475,9 @@ zfs_userspace_many(zfs_sb_t *zsb, zfs_userquota_prop_t type,
 		return (0);
 	}
 
+	if (type == ZFS_PROP_USEROBJUSED || type == ZFS_PROP_GROUPOBJUSED)
+		offset = strlen("obj-");
+
 	for (zap_cursor_init_serialized(&zc, zsb->z_os, obj, *cookiep);
 	    (error = zap_cursor_retrieve(&zc, &za)) == 0;
 	    zap_cursor_advance(&zc)) {
@@ -470,7 +485,14 @@ zfs_userspace_many(zfs_sb_t *zsb, zfs_userquota_prop_t type,
 		    *bufsizep)
 			break;
 
-		fuidstr_to_sid(zsb, za.za_name,
+		/*
+		 * skip object quota(with zap name "obj-") when dealing
+		 * with block quota.
+		 */
+		if (za.za_name[0] == 'o' && offset == 0)
+			continue;
+
+		fuidstr_to_sid(zsb, za.za_name + offset,
 		    buf->zu_domain, sizeof (buf->zu_domain), &buf->zu_rid);
 
 		buf->zu_space = za.za_first_integer;
@@ -511,7 +533,8 @@ int
 zfs_userspace_one(zfs_sb_t *zsb, zfs_userquota_prop_t type,
     const char *domain, uint64_t rid, uint64_t *valp)
 {
-	char buf[32];
+	char buf[36] = "obj-";
+	int offset = 0;
 	int err;
 	uint64_t obj;
 
@@ -520,11 +543,19 @@ zfs_userspace_one(zfs_sb_t *zsb, zfs_userquota_prop_t type,
 	if (!dmu_objset_userspace_present(zsb->z_os))
 		return (SET_ERROR(ENOTSUP));
 
+	if ((type == ZFS_PROP_USEROBJUSED || type == ZFS_PROP_GROUPOBJUSED ||
+	    type == ZFS_PROP_USEROBJQUOTA || type == ZFS_PROP_GROUPOBJQUOTA) &&
+	    !dmu_objset_userobjspace_present(zsb->z_os))
+		return (SET_ERROR(ENOTSUP));
+
 	obj = zfs_userquota_prop_to_obj(zsb, type);
 	if (obj == 0)
 		return (0);
 
-	err = id_to_fuidstr(zsb, domain, rid, buf, B_FALSE);
+	if (type == ZFS_PROP_USEROBJUSED || type == ZFS_PROP_GROUPOBJUSED)
+		offset = strlen("obj-");
+
+	err = id_to_fuidstr(zsb, domain, rid, buf + offset, B_FALSE);
 	if (err)
 		return (err);
 
@@ -545,14 +576,25 @@ zfs_set_userquota(zfs_sb_t *zsb, zfs_userquota_prop_t type,
 	uint64_t *objp;
 	boolean_t fuid_dirtied;
 
-	if (type != ZFS_PROP_USERQUOTA && type != ZFS_PROP_GROUPQUOTA)
-		return (SET_ERROR(EINVAL));
-
 	if (zsb->z_version < ZPL_VERSION_USERSPACE)
 		return (SET_ERROR(ENOTSUP));
 
-	objp = (type == ZFS_PROP_USERQUOTA) ? &zsb->z_userquota_obj :
-	    &zsb->z_groupquota_obj;
+	switch (type) {
+	case ZFS_PROP_USERQUOTA:
+		objp = &zsb->z_userquota_obj;
+		break;
+	case ZFS_PROP_GROUPQUOTA:
+		objp = &zsb->z_groupquota_obj;
+		break;
+	case ZFS_PROP_USEROBJQUOTA:
+		objp = &zsb->z_userobjquota_obj;
+		break;
+	case ZFS_PROP_GROUPOBJQUOTA:
+		objp = &zsb->z_groupobjquota_obj;
+		break;
+	default:
+		return (SET_ERROR(EINVAL));
+	}
 
 	err = id_to_fuidstr(zsb, domain, rid, buf, B_TRUE);
 	if (err)

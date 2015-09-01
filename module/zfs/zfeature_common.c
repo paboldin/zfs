@@ -242,4 +242,8 @@ zpool_feature_init(void)
 	    "Support for blocks larger than 128KB.",
 	    ZFEATURE_FLAG_PER_DATASET, large_blocks_deps);
 	}
+	zfeature_register(SPA_FEATURE_USEROBJ_ACCOUNTING,
+	    "org.zfsonlinux:user_object_accounting", "userobj_accounting",
+	    "User/Group object accounting.",
+	    ZFEATURE_FLAG_READONLY_COMPAT | ZFEATURE_FLAG_PER_DATASET, NULL);
 }
