@@ -110,6 +110,8 @@ typedef struct zfs_sb {
 	kmutex_t	z_lock;
 	uint64_t	z_userquota_obj;
 	uint64_t	z_groupquota_obj;
+	uint64_t	z_userobjquota_obj;
+	uint64_t	z_groupobjquota_obj;
 	uint64_t	z_replay_eof;	/* New end of file - replay only */
 	sa_attr_type_t	*z_attr_table;	/* SA attr mapping->id */
 	uint64_t	z_hold_size;	/* znode hold array size */
