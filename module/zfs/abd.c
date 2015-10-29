@@ -25,6 +25,7 @@
 
 #include <sys/abd.h>
 #include <sys/zio.h>
+
 #ifdef _KERNEL
 #include <linux/kernel.h>
 #include <linux/sched.h>
@@ -34,97 +35,10 @@
 #include <linux/pagemap.h>
 #include <linux/kmap_compat.h>
 
-#else	/* _KERNEL */
-
-/*
- * Userspace compatibility layer
- */
-
-/*
- * page
- */
-#ifndef PAGE_SHIFT
-#define	PAGE_SHIFT (highbit64(PAGESIZE)-1)
+#if (defined(CONFIG_ARCH_HAS_SG_CHAIN) || defined(ARCH_HAS_SG_CHAIN))
+#define __USE_SG 1
 #endif
-
-struct page;
-
-#define	alloc_page(gfp) \
-	((struct page *)umem_alloc_aligned(PAGESIZE, PAGESIZE, UMEM_DEFAULT))
-
-#define	__free_page(page) \
-	umem_free(page, PAGESIZE)
-
-/*
- * scatterlist
- */
-struct scatterlist {
-	struct page *page;
-	int length;
-	int end;
-};
-
-static void
-sg_init_table(struct scatterlist *sg, int nr) {
-	memset(sg, 0, nr * sizeof (struct scatterlist));
-	sg[nr - 1].end = 1;
-}
-
-#define	for_each_sg(sgl, sg, nr, i)	\
-	for ((i) = 0, (sg) = (sgl); (i) < (nr); (i)++, (sg) = sg_next(sg))
-
-static inline void
-sg_set_page(struct scatterlist *sg, struct page *page, unsigned int len,
-    unsigned int offset)
-{
-	/* currently we don't use offset */
-	ASSERT(offset == 0);
-	sg->page = page;
-	sg->length = len;
-}
-
-static inline struct page *
-sg_page(struct scatterlist *sg)
-{
-	return (sg->page);
-}
-
-static inline struct scatterlist *
-sg_next(struct scatterlist *sg)
-{
-	if (sg->end)
-		return (NULL);
-	return (sg + 1);
-}
-
-/*
- * misc
- */
-#ifndef DIV_ROUND_UP
-#define	DIV_ROUND_UP(n, d)		(((n) + (d) - 1) / (d))
-#endif
-
-#ifndef unlikely
-#define	unlikely(x)			(x)
-#endif
-
-#define	kmap(page)			((void *)page)
-#define	kunmap(page)			do { } while (0)
-#define	zfs_kmap_atomic(page, type)	((void *)page)
-#define	zfs_kunmap_atomic(addr, type)	do { } while (0)
-#define	pagefault_disable()		do { } while (0)
-#define	pagefault_enable()		do { } while (0)
-#define	flush_kernel_dcache_page(page)	do { } while (0)
-#define	set_current_state(state)	do { } while (0)
-static inline long
-schedule_timeout(long timeout)
-{
-	sleep(timeout);
-	return (0);
-}
-
 #endif	/* _KERNEL */
-
 
 struct abd_miter {
 	void *addr;		/* mapped addr, adjusted by offset */
@@ -132,7 +46,9 @@ struct abd_miter {
 	int offset;		/* offset in current segment */
 	int is_linear;		/* the type of the abd */
 	union {
+#ifdef __USE_SG
 		struct scatterlist *sg;
+#endif
 		void *buf;
 	};
 	int nents;		/* num of sg entries */
@@ -155,16 +71,19 @@ static void
 abd_miter_init_km(struct abd_miter *aiter, abd_t *abd, int rw, int km)
 {
 	ASSERT(abd->abd_nents != 0);
+	bzero(aiter, sizeof(*aiter));
 	aiter->addr = NULL;
 	if (ABD_IS_LINEAR(abd)) {
 		ASSERT(abd->abd_nents == 1);
 		aiter->is_linear = 1;
 		aiter->buf = abd->abd_buf;
 		aiter->length = abd->abd_size;
+#ifdef __USE_SG
 	} else {
 		aiter->is_linear = 0;
 		aiter->sg = abd->abd_sgl;
 		aiter->length = aiter->sg->length - abd->abd_offset;
+#endif
 	}
 	aiter->offset = abd->abd_offset;
 	aiter->nents = abd->abd_nents;
@@ -192,7 +111,7 @@ do {							\
 static void
 abd_miter_map_x(struct abd_miter *aiter, int atomic)
 {
-	void *paddr;
+	void *paddr = NULL;
 
 	ASSERT(!aiter->addr);
 
@@ -201,12 +120,7 @@ abd_miter_map_x(struct abd_miter *aiter, int atomic)
 
 	if (aiter->is_linear) {
 		paddr = aiter->buf;
-		/*
-		 * Turn of pagefault to keep the context the same as
-		 * kmap_atomic.
-		 */
-		if (atomic)
-			pagefault_disable();
+#ifdef __USE_SG
 	} else {
 		ASSERT(aiter->length == aiter->sg->length - aiter->offset);
 
@@ -215,6 +129,7 @@ abd_miter_map_x(struct abd_miter *aiter, int atomic)
 			    (aiter->km_type ? KM_USER1 : KM_USER0));
 		else
 			paddr = kmap(sg_page(aiter->sg));
+#endif
 	}
 	aiter->addr = paddr + aiter->offset;
 }
@@ -228,17 +143,16 @@ abd_miter_map_x(struct abd_miter *aiter, int atomic)
 static void
 abd_miter_unmap_x(struct abd_miter *aiter, int atomic)
 {
-	void *paddr;
-
 	if (!aiter->nents)
 		return;
 
 	ASSERT(aiter->addr);
 
 	if (aiter->is_linear) {
-		if (atomic)
-			pagefault_enable();
+#ifdef __USE_SG
 	} else {
+		void *paddr;
+
 		paddr = aiter->addr - aiter->offset;
 		if (atomic) {
 			if (aiter->rw == ABD_MITER_W)
@@ -248,6 +162,7 @@ abd_miter_unmap_x(struct abd_miter *aiter, int atomic)
 		} else {
 			kunmap(sg_page(aiter->sg));
 		}
+#endif
 	}
 	aiter->addr = NULL;
 }
@@ -296,17 +211,19 @@ abd_miter_advance(struct abd_miter *aiter, int offset)
 			aiter->length = 0;
 			return (0);
 		}
+#ifdef __USE_SG
 	} else {
 		while (aiter->offset >= aiter->sg->length) {
 			aiter->offset -= aiter->sg->length;
 			aiter->nents--;
-			aiter->sg = sg_next(aiter->sg);
 			if (!aiter->nents) {
 				aiter->length = 0;
 				return (0);
 			}
+			aiter->sg = sg_next(aiter->sg);
 		}
 		aiter->length = aiter->sg->length - aiter->offset;
+#endif
 	}
 	return (1);
 }
@@ -676,18 +593,11 @@ abd_copy_to_user_off(void __user *buf, abd_t *abd, size_t size,
 		len = MIN(aiter.length, size);
 		ASSERT(len > 0);
 
-		abd_miter_map_atomic(&aiter);
-
-		ret = __copy_to_user_inatomic(buf, aiter.addr, len);
-
-		abd_miter_unmap_atomic(&aiter);
-		if (ret) {
-			abd_miter_map(&aiter);
-			ret = copy_to_user(buf, aiter.addr, len);
-			abd_miter_unmap(&aiter);
-			if (ret)
-				break;
-		}
+		abd_miter_map(&aiter);
+		ret = copy_to_user(buf, aiter.addr, len);
+		abd_miter_unmap(&aiter);
+		if (ret)
+			break;
 
 		size -= len;
 		buf += len;
@@ -718,18 +628,11 @@ abd_copy_from_user_off(abd_t *abd, const void __user *buf, size_t size,
 		len = MIN(aiter.length, size);
 		ASSERT(len > 0);
 
-		abd_miter_map_atomic(&aiter);
-
-		ret = __copy_from_user_inatomic(aiter.addr, buf, len);
-
-		abd_miter_unmap_atomic(&aiter);
-		if (ret) {
-			abd_miter_map(&aiter);
-			ret = copy_from_user(aiter.addr, buf, len);
-			abd_miter_unmap(&aiter);
-			if (ret)
-				break;
-		}
+		abd_miter_map(&aiter);
+		ret = copy_from_user(aiter.addr, buf, len);
+		abd_miter_unmap(&aiter);
+		if (ret)
+			break;
 
 		size -= len;
 		buf += len;
@@ -872,31 +775,29 @@ unsigned int
 abd_scatter_bio_map_off(struct bio *bio, abd_t *abd, unsigned int bio_size,
     size_t off)
 {
-	int i;
+	struct scatterlist *sg = abd->abd_sgl;
+	struct sg_page_iter iter;
+	struct page *page;
+	unsigned int skip_pages;
 	size_t len;
-	struct abd_miter aiter;
 
 	ABD_CHECK(abd);
 	ASSERT_ABD_SCATTER(abd);
 	ASSERT(bio_size <= abd->abd_size - off);
 
-	abd_miter_init(&aiter, abd, ABD_MITER_R);
-	abd_miter_advance(&aiter, off);
+	skip_pages = (abd->abd_offset + off) >> PAGE_SHIFT;
+	off = offset_in_page(abd->abd_offset + off);
 
-	for (i = 0; i < bio->bi_max_vecs; i++) {
-		if (bio_size <= 0)
-			break;
-
-		len = MIN(bio_size, aiter.length);
-		ASSERT(len > 0);
-
-		if (bio_add_page(bio, sg_page(aiter.sg), len,
-		    aiter.offset) != len)
+	for_each_sg_page(sg, &iter, abd->abd_nents, skip_pages) {
+		len = MIN(bio_size, PAGE_SIZE - off);
+		page = sg_page_iter_page(&iter);
+		if (bio_add_page(bio, page, len, off) != len)
 			break;
 
 		bio_size -= len;
-		abd_miter_advance(&aiter, len);
+		off = 0;
 	}
+
 	return (bio_size);
 }
 
@@ -929,7 +830,6 @@ static kmem_cache_t *abd_struct_cache = NULL;
 abd_t *
 abd_get_offset(abd_t *sabd, size_t off)
 {
-	size_t offset;
 	abd_t *abd;
 
 	ABD_CHECK(sabd);
@@ -945,25 +845,29 @@ abd_get_offset(abd_t *sabd, size_t off)
 		abd->abd_offset = 0;
 		abd->abd_nents = 1;
 		abd->abd_buf = sabd->abd_buf + off;
-	} else if (!(sabd->abd_flags & ABD_F_SG_CHAIN)) {
-		/* scatterlist is not chained, treat it as an array. */
-		offset = sabd->abd_offset + off;
-		abd->abd_offset = offset & (PAGESIZE - 1);
-		/* make sure the new abd start as sgl[0] */
-		abd->abd_sgl = &sabd->abd_sgl[offset >> PAGE_SHIFT];
-		abd->abd_nents = sabd->abd_nents - (offset >> PAGE_SHIFT);
+#ifdef __USE_SG
 	} else {
+		struct scatterlist *sg;
+		size_t offset;
+		int i;
+
 		/* Chained scatterlist, need to walk through it. */
 		abd->abd_sgl = sabd->abd_sgl;
 		abd->abd_nents = sabd->abd_nents;
 
 		offset = sabd->abd_offset + off;
-		while (offset >= PAGESIZE) {
-			abd->abd_sgl = sg_next(abd->abd_sgl);
-			abd->abd_nents--;
-			offset -= PAGESIZE;
+		for_each_sg(sabd->abd_sgl, sg, sabd->abd_nents, i) {
+			if (offset > sg->length) {
+				offset -= sg->length;
+				--abd->abd_nents;
+				continue;
+			}
+
+			abd->abd_sgl = sg;
+			break;
 		}
 		abd->abd_offset = offset;
+#endif
 	}
 
 	return (abd);
@@ -1005,84 +909,6 @@ abd_put(abd_t *abd)
 	kmem_cache_free(abd_struct_cache, abd);
 }
 
-static void
-abd_sg_alloc_table(abd_t *abd)
-{
-	int n = abd->abd_nents;
-#if defined(_KERNEL) && \
-	(defined(CONFIG_ARCH_HAS_SG_CHAIN) || defined(ARCH_HAS_SG_CHAIN))
-	struct sg_table table;
-	while (sg_alloc_table(&table, n, GFP_NOIO))
-		schedule_timeout(1);
-
-	ASSERT3U(table.nents, ==, n);
-	abd->abd_sgl = table.sgl;
-	/* scatterlist is chained (see sg_alloc_table) */
-	if (n > SG_MAX_SINGLE_ALLOC)
-		abd->abd_flags |= ABD_F_SG_CHAIN;
-#else
-	/*
-	 * Unfortunately, some arch don't support chained scatterlist. For
-	 * them and user space, we use contiguous scatterlist. For a 16MB
-	 * buffer size with 4KB page, this would mean around 128KB of
-	 * scatterlist.
-	 */
-	abd->abd_sgl = vmem_alloc(n * sizeof (struct scatterlist), KM_PUSHPAGE);
-	ASSERT(abd->abd_sgl);
-	sg_init_table(abd->abd_sgl, n);
-#endif
-}
-
-static void
-abd_sg_free_table(abd_t *abd)
-{
-#if defined(_KERNEL) && \
-	(defined(CONFIG_ARCH_HAS_SG_CHAIN) || defined(ARCH_HAS_SG_CHAIN))
-	struct sg_table table;
-	table.sgl = abd->abd_sgl;
-	table.nents = table.orig_nents = abd->abd_nents;
-	sg_free_table(&table);
-#else
-	vmem_free(abd->abd_sgl, abd->abd_nents * sizeof (struct scatterlist));
-#endif
-}
-
-/*
- * Allocate a scatter ABD
- */
-abd_t *
-abd_alloc_scatter(size_t size)
-{
-	abd_t *abd;
-	struct page *page;
-	struct scatterlist *sg;
-	int i, n = DIV_ROUND_UP(size, PAGESIZE);
-	size_t last_size = size - ((n-1) << PAGE_SHIFT);
-
-	abd = kmem_cache_alloc(abd_struct_cache, KM_PUSHPAGE);
-
-	abd->abd_magic = ARC_BUF_DATA_MAGIC;
-	abd->abd_flags = ABD_F_SCATTER|ABD_F_OWNER|ABD_F_HIGHMEM;
-	abd->abd_size = size;
-	abd->abd_offset = 0;
-	abd->abd_nents = n;
-
-	abd_sg_alloc_table(abd);
-
-	for_each_sg(abd->abd_sgl, sg, n, i) {
-retry:
-		page = alloc_page(GFP_NOIO|__GFP_HIGHMEM);
-		if (unlikely(page == NULL)) {
-			set_current_state(TASK_INTERRUPTIBLE);
-			schedule_timeout(1);
-			goto retry;
-		}
-		sg_set_page(sg, page, (i == n-1 ? last_size : PAGESIZE), 0);
-	}
-
-	return (abd);
-}
-
 /*
  * Allocate a linear ABD
  */
@@ -1105,33 +931,91 @@ abd_alloc_linear(size_t size)
 }
 
 static void
-abd_free_scatter(abd_t *abd, size_t size)
-{
-	int i, n;
-	struct scatterlist *sg;
-	struct page *page;
-
-	ASSERT(abd->abd_nents == DIV_ROUND_UP(abd->abd_size, PAGESIZE));
-
-	n = abd->abd_nents;
-	abd->abd_magic = 0;
-	for_each_sg(abd->abd_sgl, sg, n, i) {
-		page = sg_page(sg);
-		if (page)
-			__free_page(page);
-	}
-
-	abd_sg_free_table(abd);
-	kmem_cache_free(abd_struct_cache, abd);
-}
-
-static void
 abd_free_linear(abd_t *abd, size_t size)
 {
 	abd->abd_magic = 0;
 	zio_buf_free(abd->abd_buf, size);
 	kmem_cache_free(abd_struct_cache, abd);
 }
+
+#ifdef __USE_SG
+/*
+ * Allocate a scatter ABD
+ */
+abd_t *
+abd_alloc_scatter(size_t size)
+{
+	struct sg_table table;
+	abd_t *abd;
+	struct page **pages;
+	unsigned long addr;
+	int i, n = DIV_ROUND_UP(size, PAGESIZE);
+
+	pages = kmem_alloc(sizeof(*pages) * n, KM_SLEEP);
+        addr = (unsigned long)alloc_pages_exact(size, GFP_NOWAIT);
+        if (addr != 0) {
+                for (i = 0; i < n; i++, addr += PAGE_SIZE)
+                        pages[i] = virt_to_page(addr);
+        } else {
+                for (i = 0; i < n; i++) {
+                        while ((pages[i] = alloc_page(GFP_NOIO|__GFP_HIGHMEM)) == NULL) {
+                                set_current_state(TASK_INTERRUPTIBLE);
+                                schedule_timeout(1);
+                        }
+                }
+        }
+
+	while (sg_alloc_table_from_pages(&table, pages, n, 0, size, GFP_NOIO))
+		schedule_timeout(1);
+
+	abd = kmem_cache_alloc(abd_struct_cache, KM_PUSHPAGE);
+
+	abd->abd_magic = ARC_BUF_DATA_MAGIC;
+	abd->abd_flags = ABD_F_SCATTER|ABD_F_OWNER|ABD_F_HIGHMEM;
+	abd->abd_size = size;
+	abd->abd_offset = 0;
+
+	abd->abd_sgl = table.sgl;
+	abd->abd_nents = table.nents;
+
+	kmem_free(pages, sizeof(*pages) * n);
+	return (abd);
+}
+
+static void
+abd_free_scatter(abd_t *abd, size_t size)
+{
+	struct sg_table table;
+	struct scatterlist *sg = abd->abd_sgl;
+	struct page *page;
+	struct sg_page_iter iter;
+
+	abd->abd_magic = 0;
+	for_each_sg_page(sg, &iter, abd->abd_nents, 0) {
+		page = sg_page_iter_page(&iter);
+		__free_page(page);
+	}
+
+	table.sgl = sg;
+	table.nents = table.orig_nents = abd->abd_nents;
+	sg_free_table(&table);
+
+	kmem_cache_free(abd_struct_cache, abd);
+}
+
+#else
+abd_t *
+abd_alloc_scatter(size_t size)
+{
+	return abd_alloc_linear(size);
+}
+
+static void
+abd_free_scatter(abd_t *abd, size_t size)
+{
+	ASSERT(0);
+}
+#endif
 
 /*
  * Free a ABD.
