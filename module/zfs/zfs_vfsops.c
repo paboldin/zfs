@@ -486,10 +486,10 @@ zfs_userspace_many(zfs_sb_t *zsb, zfs_userquota_prop_t type,
 			break;
 
 		/*
-		 * skip object quota(with zap name "obj-") when dealing
-		 * with block quota.
+		 * Skip object quota (with zap name prefix "obj-") when dealing
+		 * with block quota and vice versa.
 		 */
-		if (za.za_name[0] == 'o' && offset == 0)
+		if ((za.za_name[0] == 'o') != (offset == 3))
 			continue;
 
 		fuidstr_to_sid(zsb, za.za_name + offset,
@@ -815,6 +815,18 @@ zfs_sb_create(const char *osname, zfs_mntopts_t *zmo, zfs_sb_t **zsbp)
 	error = zap_lookup(os, MASTER_NODE_OBJ,
 	    zfs_userquota_prop_prefixes[ZFS_PROP_GROUPQUOTA],
 	    8, 1, &zsb->z_groupquota_obj);
+	if (error && error != ENOENT)
+		goto out;
+
+	error = zap_lookup(os, MASTER_NODE_OBJ,
+	    zfs_userquota_prop_prefixes[ZFS_PROP_USEROBJQUOTA],
+	    8, 1, &zsb->z_userobjquota_obj);
+	if (error && error != ENOENT)
+		goto out;
+
+	error = zap_lookup(os, MASTER_NODE_OBJ,
+	    zfs_userquota_prop_prefixes[ZFS_PROP_GROUPOBJQUOTA],
+	    8, 1, &zsb->z_groupobjquota_obj);
 	if (error && error != ENOENT)
 		goto out;
 
