@@ -2204,10 +2204,14 @@ enum us_field_types {
 	USFIELD_TYPE,
 	USFIELD_NAME,
 	USFIELD_USED,
-	USFIELD_QUOTA
+	USFIELD_QUOTA,
+	USFIELD_OBJUSED,
+	USFIELD_OBJQUOTA
 };
-static char *us_field_hdr[] = { "TYPE", "NAME", "USED", "QUOTA" };
-static char *us_field_names[] = { "type", "name", "used", "quota" };
+static char *us_field_hdr[] = { "TYPE", "NAME", "USED", "QUOTA",
+				"OBJUSED", "OBJQUOTA" };
+static char *us_field_names[] = { "type", "name", "used", "quota",
+				  "objused", "objquota" };
 #define	USFIELD_LAST	(sizeof (us_field_names) / sizeof (char *))
 
 #define	USTYPE_PSX_GRP	(1 << 0)
@@ -2300,6 +2304,7 @@ us_compare(const void *larg, const void *rarg, void *unused)
 		case ZFS_PROP_NAME:
 			propname = "name";
 			if (numname) {
+compare_nums:
 				(void) nvlist_lookup_uint64(lnvl, propname,
 				    &lv64);
 				(void) nvlist_lookup_uint64(rnvl, propname,
@@ -2307,10 +2312,12 @@ us_compare(const void *larg, const void *rarg, void *unused)
 				if (rv64 != lv64)
 					rc = (rv64 < lv64) ? 1 : -1;
 			} else {
-				(void) nvlist_lookup_string(lnvl, propname,
-				    &lvstr);
-				(void) nvlist_lookup_string(rnvl, propname,
-				    &rvstr);
+				if ((nvlist_lookup_string(lnvl, propname,
+						&lvstr) == ENOENT) +
+				    (nvlist_lookup_string(rnvl, propname,
+						&rvstr) == ENOENT)) {
+					goto compare_nums;
+				}
 				rc = strcmp(lvstr, rvstr);
 			}
 			break;
@@ -2441,7 +2448,9 @@ userspace_cb(void *arg, const char *domain, uid_t rid, uint64_t space)
 
 	if (cb->cb_sid2posix || domain == NULL || domain[0] == '\0') {
 		/* POSIX or -i */
-		if (prop == ZFS_PROP_GROUPUSED || prop == ZFS_PROP_GROUPQUOTA) {
+		if (prop == ZFS_PROP_GROUPUSED || prop == ZFS_PROP_GROUPQUOTA ||
+		    prop == ZFS_PROP_GROUPOBJUSED ||
+		    prop == ZFS_PROP_GROUPOBJQUOTA) {
 			type = USTYPE_PSX_GRP;
 			if (!cb->cb_numname) {
 				struct group *g;
@@ -2516,10 +2525,22 @@ userspace_cb(void *arg, const char *domain, uid_t rid, uint64_t space)
 		propname = "used";
 		if (!nvlist_exists(props, "quota"))
 			(void) nvlist_add_uint64(props, "quota", 0);
-	} else {
+	} else if (prop == ZFS_PROP_USERQUOTA || prop == ZFS_PROP_GROUPQUOTA) {
 		propname = "quota";
 		if (!nvlist_exists(props, "used"))
 			(void) nvlist_add_uint64(props, "used", 0);
+	} else if (prop == ZFS_PROP_USEROBJUSED ||
+		   prop == ZFS_PROP_GROUPOBJUSED) {
+		propname = "objused";
+		if (!nvlist_exists(props, "objquota"))
+			(void) nvlist_add_uint64(props, "objquota", 0);
+        } else if (prop == ZFS_PROP_USEROBJQUOTA ||
+		   prop == ZFS_PROP_GROUPOBJQUOTA) {
+		propname = "objquota";
+		if (!nvlist_exists(props, "objused"))
+			(void) nvlist_add_uint64(props, "objused", 0);
+	} else {
+		return (-1);
 	}
 	sizeidx = us_field_index(propname);
 	if (sizelen > cb->cb_width[sizeidx])
@@ -2560,7 +2581,7 @@ print_us_node(boolean_t scripted, boolean_t parsable, int *fields, int types,
 				break;
 		}
 
-		type = nvpair_type(nvp);
+		type = nvp == NULL ? DATA_TYPE_UNKNOWN : nvpair_type(nvp);
 		switch (type) {
 		case DATA_TYPE_UINT32:
 			(void) nvpair_value_uint32(nvp, &val32);
@@ -2590,18 +2611,24 @@ print_us_node(boolean_t scripted, boolean_t parsable, int *fields, int types,
 		case USFIELD_QUOTA:
 			if (type == DATA_TYPE_UINT64) {
 				if (parsable) {
+parseable_value:
 					(void) sprintf(valstr, "%llu",
 					    (u_longlong_t) val64);
 				} else {
 					zfs_nicenum(val64, valstr,
 					    sizeof (valstr));
 				}
-				if (field == USFIELD_QUOTA &&
+				if ((field == USFIELD_QUOTA ||
+				     field == USFIELD_OBJQUOTA) &&
 				    strcmp(valstr, "0") == 0)
 					strval = "none";
 				else
 					strval = valstr;
 			}
+			break;
+		case USFIELD_OBJUSED:
+		case USFIELD_OBJQUOTA:
+			goto parseable_value;
 			break;
 		}
 
@@ -2668,7 +2695,7 @@ zfs_do_userspace(int argc, char **argv)
 	uu_avl_t *avl_tree;
 	uu_avl_walk_t *walk;
 	char *delim;
-	char deffields[] = "type,name,used,quota";
+	char deffields[] = "type,name,used,quota,objused,objquota";
 	char *ofield = NULL;
 	char *tfield = NULL;
 	int cfield = 0;
