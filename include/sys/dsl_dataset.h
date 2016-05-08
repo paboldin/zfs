@@ -317,6 +317,9 @@ void dsl_dataset_set_refreservation_sync_impl(dsl_dataset_t *ds,
 void dsl_dataset_zapify(dsl_dataset_t *ds, dmu_tx_t *tx);
 int dsl_dataset_rollback(const char *fsname, void *owner, nvlist_t *result);
 
+int dsl_dataset_enable_dedup(const char *dsname, uint64_t from_txg,
+    uint64_t to_txg);
+
 void dsl_dataset_deactivate_feature(uint64_t dsobj,
     spa_feature_t f, dmu_tx_t *tx);
 

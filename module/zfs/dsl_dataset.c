@@ -3390,6 +3390,32 @@ dsl_dataset_zapify(dsl_dataset_t *ds, dmu_tx_t *tx)
 	dmu_object_zapify(mos, ds->ds_object, DMU_OT_DSL_DATASET, tx);
 }
 
+struct dataset_enable_dedup_arg {
+	const char *dsname;
+	uint64_t from_txg;
+	uint64_t to_txg;
+};
+
+
+void dsl_dataset_enable_dedup_sync_impl(void *arg, dmu_tx_t *tx)
+{
+	return;
+}
+
+int
+dsl_dataset_enable_dedup(const char *dsname, uint64_t from_txg,
+	uint64_t to_txg)
+{
+	struct dataset_enable_dedup_arg deda;
+
+	deda.dsname = dsname;
+	deda.from_txg = from_txg;
+	deda.to_txg = to_txg;
+
+	return dsl_sync_task(dsname, NULL, dsl_dataset_enable_dedup_sync_impl,
+		&deda, 0, ZFS_SPACE_CHECK_NONE);
+}
+
 #if defined(_KERNEL) && defined(HAVE_SPL)
 #if defined(_LP64)
 module_param(zfs_max_recordsize, int, 0644);

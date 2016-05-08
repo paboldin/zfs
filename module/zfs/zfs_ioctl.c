@@ -1047,6 +1047,13 @@ zfs_secpolicy_destroy_bookmarks(zfs_cmd_t *zc, nvlist_t *innvl, cred_t *cr)
 
 /* ARGSUSED */
 static int
+zfs_secpolicy_enable_dedup(zfs_cmd_t *zc, nvlist_t *innvl, cred_t *cr)
+{
+	return 0;
+}
+
+/* ARGSUSED */
+static int
 zfs_secpolicy_log_history(zfs_cmd_t *zc, nvlist_t *innvl, cred_t *cr)
 {
 	/*
@@ -3517,6 +3524,45 @@ zfs_ioc_destroy_bookmarks(const char *poolname, nvlist_t *innvl,
 }
 
 /*
+ * innvl: {
+ *     from_txg => uint64, to_txg => uint64
+ * }
+ *
+ * outnvl: {}
+ *
+ */
+static int
+zfs_ioc_enable_dedup(const char *fsname, nvlist_t *innvl,
+    nvlist_t *outnvl)
+{
+	nvpair_t *pair;
+	uint64_t from_txg = 0, to_txg = 0;
+	bool got_from = B_FALSE, got_to = B_FALSE;
+
+	for (pair = nvlist_next_nvpair(innvl, NULL);
+	    pair != NULL; pair = nvlist_next_nvpair(innvl, pair)) {
+		const char *name = nvpair_name(pair);
+
+		if (strcmp(name, "from_txg") == 0) {
+			if (nvpair_value_uint64(pair, &from_txg))
+				return (SET_ERROR(EINVAL));
+			got_from = B_TRUE;
+		} else if (strcmp(name, "to_txg") == 0) {
+			if (nvpair_value_uint64(pair, &to_txg))
+				return (SET_ERROR(EINVAL));
+			got_to = B_TRUE;
+		} else {
+			return (SET_ERROR(EINVAL));
+		}
+	}
+
+	if (!got_from || !got_to)
+		return (SET_ERROR(EINVAL));
+
+	return dsl_dataset_enable_dedup(fsname, from_txg, to_txg);
+}
+
+/*
  * inputs:
  * zc_name		name of dataset to destroy
  * zc_objset_type	type of objset
@@ -5417,6 +5463,11 @@ zfs_ioctl_init(void)
 	    zfs_ioc_destroy_bookmarks, zfs_secpolicy_destroy_bookmarks,
 	    POOL_NAME,
 	    POOL_CHECK_SUSPENDED | POOL_CHECK_READONLY, B_TRUE, B_TRUE);
+
+	zfs_ioctl_register("enable_dedup", ZFS_IOC_ENABLE_DEDUP,
+	    zfs_ioc_enable_dedup, zfs_secpolicy_enable_dedup,
+	    DATASET_NAME,
+	    POOL_CHECK_NONE, B_FALSE, B_TRUE);
 
 	/* IOCTLS that use the legacy function signature */
 
