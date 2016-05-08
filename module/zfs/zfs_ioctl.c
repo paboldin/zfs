@@ -1047,13 +1047,6 @@ zfs_secpolicy_destroy_bookmarks(zfs_cmd_t *zc, nvlist_t *innvl, cred_t *cr)
 
 /* ARGSUSED */
 static int
-zfs_secpolicy_enable_dedup(zfs_cmd_t *zc, nvlist_t *innvl, cred_t *cr)
-{
-	return 0;
-}
-
-/* ARGSUSED */
-static int
 zfs_secpolicy_log_history(zfs_cmd_t *zc, nvlist_t *innvl, cred_t *cr)
 {
 	/*
@@ -5465,9 +5458,8 @@ zfs_ioctl_init(void)
 	    POOL_CHECK_SUSPENDED | POOL_CHECK_READONLY, B_TRUE, B_TRUE);
 
 	zfs_ioctl_register("enable_dedup", ZFS_IOC_ENABLE_DEDUP,
-	    zfs_ioc_enable_dedup, zfs_secpolicy_enable_dedup,
-	    DATASET_NAME,
-	    POOL_CHECK_NONE, B_FALSE, B_TRUE);
+	    zfs_ioc_enable_dedup, zfs_secpolicy_none, /* FIXME */
+	    DATASET_NAME, POOL_CHECK_NONE, B_FALSE, B_TRUE);
 
 	/* IOCTLS that use the legacy function signature */
 

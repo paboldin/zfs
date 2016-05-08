@@ -3394,11 +3394,41 @@ struct dataset_enable_dedup_arg {
 	const char *dsname;
 	uint64_t from_txg;
 	uint64_t to_txg;
+	const blkptr_t *cbp;
 };
 
+int dsl_dataset_enable_dedup_blkptr_cb(spa_t *spa, zilog_t *zilog,
+	const blkptr_t *bp, const zbookmark_phys_t *zb,
+	const struct dnode_phys *dnp, void *arg)
+{
+	//struct dataset_enable_dedup_arg *deda = arg;
+
+	if (zb->zb_level == 0)
+		dprintf("bp = %p\n", bp);
+	return 0;
+}
 
 void dsl_dataset_enable_dedup_sync_impl(void *arg, dmu_tx_t *tx)
 {
+	struct dataset_enable_dedup_arg *deda = arg;
+	dsl_pool_t *dp;
+	dsl_dataset_t *ds;
+	int err;
+
+	err = dsl_pool_hold(deda->dsname, FTAG, &dp);
+	if (err != 0)
+		return;
+
+	err = dsl_dataset_hold(dp, deda->dsname, FTAG, &ds);
+	if (err != 0)
+		goto out;
+
+	traverse_dataset(ds, deda->from_txg, TRAVERSE_POST | TRAVERSE_PRE,
+		dsl_dataset_enable_dedup_blkptr_cb, deda);
+
+	dsl_dataset_rele(ds, FTAG);
+out:
+	dsl_pool_rele(dp, FTAG);
 	return;
 }
 

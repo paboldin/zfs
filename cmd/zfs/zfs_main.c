@@ -103,6 +103,7 @@ static int zfs_do_holds(int argc, char **argv);
 static int zfs_do_release(int argc, char **argv);
 static int zfs_do_diff(int argc, char **argv);
 static int zfs_do_bookmark(int argc, char **argv);
+static int zfs_do_enable_dedup(int argc, char **argv);
 
 /*
  * Enable a reasonable set of defaults for libumem debugging on DEBUG builds.
@@ -150,6 +151,7 @@ typedef enum {
 	HELP_RELEASE,
 	HELP_DIFF,
 	HELP_BOOKMARK,
+	HELP_TODO,
 } zfs_help_t;
 
 typedef struct zfs_command {
@@ -203,6 +205,9 @@ static zfs_command_t command_table[] = {
 	{ "holds",	zfs_do_holds,		HELP_HOLDS		},
 	{ "release",	zfs_do_release,		HELP_RELEASE		},
 	{ "diff",	zfs_do_diff,		HELP_DIFF		},
+	{ NULL },
+	/* FIXME this should belong somewhere else */
+	{ "dedup",	zfs_do_enable_dedup,	HELP_TODO		},
 };
 
 #define	NCOMMAND	(sizeof (command_table) / sizeof (command_table[0]))
@@ -319,6 +324,8 @@ get_usage(zfs_help_t idx)
 		    "[snapshot|filesystem]\n"));
 	case HELP_BOOKMARK:
 		return (gettext("\tbookmark <snapshot> <bookmark>\n"));
+	case HELP_TODO:
+		return (gettext("\tdedup <fsname> <from_txg> <to_txg>\n"));
 	}
 
 	abort();
@@ -6696,6 +6703,39 @@ zfs_do_bookmark(int argc, char **argv)
 
 	return (ret != 0);
 
+usage:
+	usage(B_FALSE);
+	return (-1);
+}
+
+static int zfs_do_enable_dedup(int argc, char **argv)
+{
+	uint64_t from_txg, to_txg;
+	char fsname[MAXNAMELEN];
+	int error;
+
+	/* check number of arguments */
+	if (argc < 1) {
+		(void) fprintf(stderr, gettext("missing from_txg argument\n"));
+		goto usage;
+	}
+	if (argc < 2) {
+		(void) fprintf(stderr, gettext("missing to_txg argument\n"));
+		goto usage;
+	}
+	if (argc < 3) {
+		(void) fprintf(stderr, gettext("missing fsname argument\n"));
+		goto usage;
+	}
+
+	from_txg = strtoul(argv[1], NULL, 0);
+	to_txg = strtoul(argv[2], NULL, 0);
+	strlcpy(fsname, argv[3], sizeof(fsname));
+
+	error = lzc_enable_dedup(fsname, from_txg, to_txg);
+	(void) fprintf(stderr, "error = %d\n", error);
+
+	return (0);
 usage:
 	usage(B_FALSE);
 	return (-1);

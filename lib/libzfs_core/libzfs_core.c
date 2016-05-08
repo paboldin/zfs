@@ -739,3 +739,26 @@ lzc_destroy_bookmarks(nvlist_t *bmarks, nvlist_t **errlist)
 
 	return (error);
 }
+
+/*
+ * TODO
+ */
+int
+lzc_enable_dedup(const char *fsname, uint64_t from_txg, uint64_t to_txg)
+{
+	nvlist_t *options, *errlist;
+	int error;
+
+	options = fnvlist_alloc();
+	if (options == NULL)
+		return (SET_ERROR(ENOMEM));
+
+	fnvlist_add_uint64(options, "from_txg", from_txg);
+	fnvlist_add_uint64(options, "to_txg", to_txg);
+
+	error = lzc_ioctl(ZFS_IOC_ENABLE_DEDUP, fsname, options, &errlist);
+
+	fnvlist_free(options);
+
+	return error;
+}
