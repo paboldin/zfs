@@ -3395,6 +3395,7 @@ struct dataset_enable_dedup_arg {
 	uint64_t from_txg;
 	uint64_t to_txg;
 	const blkptr_t *cbp;
+	dmu_tx_t *tx;
 };
 
 int dsl_dataset_enable_dedup_blkptr_cb(spa_t *spa, zilog_t *zilog,
@@ -3403,32 +3404,31 @@ int dsl_dataset_enable_dedup_blkptr_cb(spa_t *spa, zilog_t *zilog,
 {
 	//struct dataset_enable_dedup_arg *deda = arg;
 
-	if (zb->zb_level == 0)
-		dprintf("bp = %p\n", bp);
+#ifdef _KERNEL
+	if (zb->zb_level == ZB_DNODE_LEVEL)
+		printk("bp = %p\n", bp);
+#endif
 	return 0;
 }
 
 void dsl_dataset_enable_dedup_sync_impl(void *arg, dmu_tx_t *tx)
 {
 	struct dataset_enable_dedup_arg *deda = arg;
-	dsl_pool_t *dp;
+	dsl_pool_t *dp = dmu_tx_pool(tx);
 	dsl_dataset_t *ds;
 	int err;
-
-	err = dsl_pool_hold(deda->dsname, FTAG, &dp);
-	if (err != 0)
-		return;
 
 	err = dsl_dataset_hold(dp, deda->dsname, FTAG, &ds);
 	if (err != 0)
 		goto out;
+
+	deda->tx = tx;
 
 	traverse_dataset(ds, deda->from_txg, TRAVERSE_POST | TRAVERSE_PRE,
 		dsl_dataset_enable_dedup_blkptr_cb, deda);
 
 	dsl_dataset_rele(ds, FTAG);
 out:
-	dsl_pool_rele(dp, FTAG);
 	return;
 }
 

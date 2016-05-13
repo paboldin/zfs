@@ -6728,9 +6728,9 @@ static int zfs_do_enable_dedup(int argc, char **argv)
 		goto usage;
 	}
 
-	from_txg = strtoul(argv[1], NULL, 0);
-	to_txg = strtoul(argv[2], NULL, 0);
-	strlcpy(fsname, argv[3], sizeof(fsname));
+	strlcpy(fsname, argv[1], sizeof(fsname));
+	from_txg = strtoul(argv[2], NULL, 0);
+	to_txg = strtoul(argv[3], NULL, 0);
 
 	error = lzc_enable_dedup(fsname, from_txg, to_txg);
 	(void) fprintf(stderr, "error = %d\n", error);
