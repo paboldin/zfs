@@ -3396,17 +3396,31 @@ struct dataset_enable_dedup_arg {
 	uint64_t to_txg;
 	const blkptr_t *cbp;
 	dmu_tx_t *tx;
+	dsl_dataset_t *ds;
 };
 
 int dsl_dataset_enable_dedup_blkptr_cb(spa_t *spa, zilog_t *zilog,
 	const blkptr_t *bp, const zbookmark_phys_t *zb,
 	const struct dnode_phys *dnp, void *arg)
 {
-	//struct dataset_enable_dedup_arg *deda = arg;
 
 #ifdef _KERNEL
-	if (zb->zb_level == ZB_DNODE_LEVEL)
-		printk("bp = %p\n", bp);
+	struct dataset_enable_dedup_arg *deda = arg;
+
+	if (zb->zb_level == ZB_DNODE_LEVEL && zb->zb_blkid == ZB_DNODE_BLKID) {
+		char path[128];
+		objset_t *os;
+		int error;
+
+		error = dmu_objset_from_ds(deda->ds, &os);
+		if (error != 0)
+			return 0;
+
+		if (zfs_obj_to_path(os, zb->zb_object, path, sizeof(path)) == 0) {
+			printk("type = %d\n", dnp->dn_type);
+			printk("path = '%s'\n", path);
+		}
+	}
 #endif
 	return 0;
 }
@@ -3423,8 +3437,9 @@ void dsl_dataset_enable_dedup_sync_impl(void *arg, dmu_tx_t *tx)
 		goto out;
 
 	deda->tx = tx;
+	deda->ds = ds;
 
-	traverse_dataset(ds, deda->from_txg, TRAVERSE_POST | TRAVERSE_PRE,
+	traverse_dataset(ds, deda->from_txg, TRAVERSE_PRE,
 		dsl_dataset_enable_dedup_blkptr_cb, deda);
 
 	dsl_dataset_rele(ds, FTAG);
